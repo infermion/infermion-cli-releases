@@ -5,13 +5,16 @@ set -eu
 release_repository=${INFERMION_RELEASE_REPOSITORY:-infermion/infermion-cli-releases}
 requested_version=${INFERMION_VERSION:-latest}
 requested_track=${INFERMION_TRACK:-${INFERMION_DEFAULT_TRACK:-stable}}
-install_dir=${INFERMION_INSTALL_DIR:-"${HOME}/.local/bin"}
 release_base=${INFERMION_RELEASE_BASE_URL:-"https://github.com/${release_repository}/releases"}
 channel_base=${INFERMION_CHANNEL_BASE_URL:-"https://raw.githubusercontent.com/${release_repository}/main/channels"}
 
 fail() {
   printf 'infermion installer: %s\n' "$1" >&2
   exit 1
+}
+
+status() {
+  printf '==> %s\n' "$1" >&2
 }
 
 download() {
@@ -32,10 +35,6 @@ printf '%s' "$release_repository" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
 case "$release_base" in https://*) ;; *) fail 'release base URL must use HTTPS' ;; esac
 case "$channel_base" in https://*) ;; *) fail 'channel base URL must use HTTPS' ;; esac
 case "$requested_track" in stable|beta) ;; *) fail 'INFERMION_TRACK must be stable or beta' ;; esac
-case "$install_dir" in *'"'*|*'\'*) fail 'install directory cannot contain quotes or backslashes' ;; esac
-newline_count=$(printf '%s' "$install_dir" | wc -l | tr -d ' ')
-[ "$newline_count" = 0 ] || fail 'install directory cannot contain newlines'
-
 case $(uname -s) in
   Darwin) target_os=macos; archive_extension=zip ;;
   Linux) target_os=linux; archive_extension=tar.gz ;;
@@ -48,10 +47,23 @@ case $(uname -m) in
   *) fail "unsupported architecture: $(uname -m)" ;;
 esac
 
+if [ "${INFERMION_INSTALL_DIR+x}" = x ]; then
+  install_dir=$INFERMION_INSTALL_DIR
+elif [ "$target_os" = linux ] && [ "$(id -u)" -eq 0 ]; then
+  install_dir=/usr/local/bin
+else
+  install_dir="${HOME}/.local/bin"
+fi
+[ -n "$install_dir" ] || fail 'install directory cannot be empty'
+case "$install_dir" in *'"'*|*'\'*) fail 'install directory cannot contain quotes or backslashes' ;; esac
+newline_count=$(printf '%s' "$install_dir" | wc -l | tr -d ' ')
+[ "$newline_count" = 0 ] || fail 'install directory cannot contain newlines'
+
 temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/infermion-install.XXXXXX")
 trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
 
 if [ "$requested_version" = latest ]; then
+  status "Resolving the latest Infermion ${requested_track} release..."
   download "${channel_base}/${requested_track}/VERSION" "$temporary_dir/VERSION"
   version=$(tr -d '\r\n ' < "$temporary_dir/VERSION")
 else
@@ -72,9 +84,11 @@ if [ "$requested_version" = latest ] && [ "$release_track" != "$requested_track"
 fi
 archive="infermion-v${version}-${target_os}-${target_arch}.${archive_extension}"
 asset_base="${release_base}/download/${tag}"
+status "Downloading Infermion ${version} for ${target_os}-${target_arch}..."
 download "${asset_base}/${archive}" "$temporary_dir/$archive"
 download "${asset_base}/SHA256SUMS" "$temporary_dir/SHA256SUMS"
 
+status 'Verifying the downloaded release...'
 if command -v "${INFERMION_COSIGN:-cosign}" >/dev/null 2>&1; then
   cosign_command=${INFERMION_COSIGN:-cosign}
   download "${asset_base}/SHA256SUMS.sigstore.json" "$temporary_dir/SHA256SUMS.sigstore.json"
@@ -101,6 +115,7 @@ else
 fi
 [ "$actual" = "$expected" ] || fail "checksum verification failed for ${archive}"
 
+status 'Preparing the native application...'
 if [ "$target_os" = macos ]; then
   /usr/bin/ditto -x -k "$temporary_dir/$archive" "$temporary_dir"
 else
@@ -120,6 +135,7 @@ installed_version=$("$binary" --version 2>/dev/null) \
   || fail 'the downloaded Infermion application did not start'
 [ "$installed_version" = "$version" ] \
   || fail "the application reported version ${installed_version}, expected ${version}"
+status "Installing Infermion to ${install_dir}..."
 mkdir -p "$install_dir"
 staged=$(mktemp "$install_dir/.infermion-${version}.XXXXXX")
 cp "$binary" "$staged"
@@ -139,6 +155,10 @@ chmod 0600 "$config_dir/install.toml"
 
 printf 'Installed Infermion %s to %s/infermion\n' "$version" "$install_dir"
 case ":${PATH}:" in
-  *":${install_dir}:"*) ;;
-  *) printf 'Add %s to PATH, then run: infermion login\n' "$install_dir" ;;
+  *":${install_dir}:"*) printf 'Next: infermion login\n' ;;
+  *)
+    printf 'Run now: "%s/infermion" login\n' "$install_dir"
+    printf 'For this shell: export PATH="%s:$PATH"\n' "$install_dir"
+    printf 'To persist it, add that export to your shell profile.\n'
+    ;;
 esac
