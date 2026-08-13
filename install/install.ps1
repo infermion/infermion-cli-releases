@@ -6,6 +6,7 @@ param(
     [string]$InstallDir = $(if ($env:INFERMION_INSTALL_DIR) { $env:INFERMION_INSTALL_DIR } else { "$env:LOCALAPPDATA\Infermion\bin" }),
     [string]$ReleaseRepository = $(if ($env:INFERMION_RELEASE_REPOSITORY) { $env:INFERMION_RELEASE_REPOSITORY } else { "infermion/infermion-cli-releases" }),
     [int]$CurrentProcessId = 0,
+    [string]$PreviousVersion = "",
     [switch]$DeleteInstaller
 )
 
@@ -105,7 +106,16 @@ try {
         [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
         Write-Host "Added $InstallDir to your user PATH. Open a new terminal before running Infermion."
     }
-    Write-Host "Installed Infermion $Version to $destination"
+    if ($CurrentProcessId -gt 0) {
+        if ($PreviousVersion) {
+            Write-Host "Updated Infermion $PreviousVersion to $Version at $destination"
+        } else {
+            Write-Host "Updated Infermion to $Version at $destination"
+        }
+        Write-Host "Next: infermion --version"
+    } else {
+        Write-Host "Installed Infermion $Version to $destination"
+    }
 } finally {
     Remove-Item -Recurse -Force $temporaryDir -ErrorAction SilentlyContinue
     if ($DeleteInstaller -and $PSCommandPath) {

@@ -7,6 +7,14 @@ requested_version=${INFERMION_VERSION:-latest}
 requested_track=${INFERMION_TRACK:-${INFERMION_DEFAULT_TRACK:-stable}}
 release_base=${INFERMION_RELEASE_BASE_URL:-"https://github.com/${release_repository}/releases"}
 channel_base=${INFERMION_CHANNEL_BASE_URL:-"https://raw.githubusercontent.com/${release_repository}/main/channels"}
+update_mode=${INFERMION_UPDATE_MODE:-0}
+previous_version=${INFERMION_PREVIOUS_VERSION:-}
+delete_installer=${INFERMION_DELETE_INSTALLER:-0}
+legacy_handoff=${INFERMION_LEGACY_HANDOFF:-0}
+current_process_id=${INFERMION_CURRENT_PROCESS_ID:-}
+suppress_cosign_warning=${INFERMION_SUPPRESS_COSIGN_WARNING:-0}
+installer_path=$0
+temporary_dir=
 
 fail() {
   printf 'infermion installer: %s\n' "$1" >&2
@@ -16,6 +24,43 @@ fail() {
 status() {
   printf '==> %s\n' "$1" >&2
 }
+
+# Releases before the POSIX exec handoff ran this installer as a child and
+# waited for it, which meant replacing the PyInstaller bundle while its parent
+# was still importing from that path. Recognize that one-time upgrade path,
+# copy this installer somewhere persistent, and finish after the old CLI exits.
+if [ "$update_mode" != 1 ] && [ "$legacy_handoff" != 1 ] && command -v ps >/dev/null 2>&1; then
+  parent_command=$(ps -p "$PPID" -o comm= 2>/dev/null | awk '{$1=$1; print}')
+  case "${parent_command##*/}" in
+    infermion|infermion.exe)
+      if [ -z "$previous_version" ]; then
+        receipt=${XDG_CONFIG_HOME:-"${HOME}/.config"}/infermion/install.toml
+        if [ -f "$receipt" ]; then
+          previous_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$receipt" | head -n 1)
+        fi
+      fi
+      parent_process_id=$PPID
+      handoff_dir=$(mktemp -d "${TMPDIR:-/tmp}/infermion-update-legacy.XXXXXX")
+      handoff_installer=$handoff_dir/install.sh
+      cp "$installer_path" "$handoff_installer"
+      chmod 0700 "$handoff_installer"
+      status 'Prepared update; finishing after the current Infermion process exits...'
+      (
+        INFERMION_UPDATE_MODE=1
+        INFERMION_PREVIOUS_VERSION=$previous_version
+        INFERMION_CURRENT_PROCESS_ID=$parent_process_id
+        INFERMION_LEGACY_HANDOFF=1
+        INFERMION_DELETE_INSTALLER=1
+        INFERMION_SUPPRESS_COSIGN_WARNING=1
+        export INFERMION_UPDATE_MODE INFERMION_PREVIOUS_VERSION
+        export INFERMION_CURRENT_PROCESS_ID INFERMION_LEGACY_HANDOFF
+        export INFERMION_DELETE_INSTALLER INFERMION_SUPPRESS_COSIGN_WARNING
+        /bin/sh "$handoff_installer"
+      ) &
+      exit 0
+      ;;
+  esac
+fi
 
 download() {
   source_url=$1
@@ -58,9 +103,28 @@ fi
 case "$install_dir" in *'"'*|*'\'*) fail 'install directory cannot contain quotes or backslashes' ;; esac
 newline_count=$(printf '%s' "$install_dir" | wc -l | tr -d ' ')
 [ "$newline_count" = 0 ] || fail 'install directory cannot contain newlines'
+case "$current_process_id" in
+  ''|*[!0-9]*) [ -z "$current_process_id" ] || fail 'current process ID must be numeric' ;;
+esac
+
+cleanup() {
+  if [ -n "$temporary_dir" ]; then
+    rm -rf "$temporary_dir"
+  fi
+  if [ "$delete_installer" = 1 ]; then
+    case "$installer_path" in
+      "${TMPDIR:-/tmp}"/infermion-update-*/install.sh)
+        installer_dir=${installer_path%/*}
+        rm -f "$installer_path"
+        rmdir "$installer_dir" 2>/dev/null || true
+        ;;
+      "${TMPDIR:-/tmp}"/infermion-update-*.sh) rm -f "$installer_path" ;;
+    esac
+  fi
+}
 
 temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/infermion-install.XXXXXX")
-trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
+trap cleanup EXIT HUP INT TERM
 
 if [ "$requested_version" = latest ]; then
   status "Resolving the latest Infermion ${requested_track} release..."
@@ -100,8 +164,9 @@ if command -v "${INFERMION_COSIGN:-cosign}" >/dev/null 2>&1; then
     || fail 'Sigstore verification failed for SHA256SUMS'
 elif [ "${INFERMION_REQUIRE_SIGSTORE:-0}" = 1 ]; then
   fail 'cosign is required because INFERMION_REQUIRE_SIGSTORE=1'
-else
-  printf '%s\n' 'cosign is not installed; continuing with HTTPS and SHA-256 verification.' >&2
+elif [ "$suppress_cosign_warning" != 1 ]; then
+  printf '%s\n' \
+    'Optional cosign verifier not found; continuing with HTTPS and SHA-256 integrity verification.' >&2
 fi
 
 expected=$(awk -v name="$archive" '$2 == name { print $1 }' "$temporary_dir/SHA256SUMS")
@@ -137,6 +202,12 @@ installed_version=$("$binary" --version 2>/dev/null) \
   || fail "the application reported version ${installed_version}, expected ${version}"
 status "Installing Infermion to ${install_dir}..."
 mkdir -p "$install_dir"
+if [ -n "$current_process_id" ]; then
+  status 'Waiting for the previous Infermion process to exit...'
+  while kill -0 "$current_process_id" 2>/dev/null; do
+    sleep 1
+  done
+fi
 staged=$(mktemp "$install_dir/.infermion-${version}.XXXXXX")
 cp "$binary" "$staged"
 chmod 0755 "$staged"
@@ -153,12 +224,22 @@ printf '%s\n' \
   > "$config_dir/install.toml"
 chmod 0600 "$config_dir/install.toml"
 
-printf 'Installed Infermion %s to %s/infermion\n' "$version" "$install_dir"
-case ":${PATH}:" in
-  *":${install_dir}:"*) printf 'Next: infermion login\n' ;;
-  *)
-    printf 'Run now: "%s/infermion" login\n' "$install_dir"
-    printf 'For this shell: export PATH="%s:$PATH"\n' "$install_dir"
-    printf 'To persist it, add that export to your shell profile.\n'
-    ;;
-esac
+if [ "$update_mode" = 1 ]; then
+  if [ -n "$previous_version" ]; then
+    printf 'Updated Infermion %s to %s at %s/infermion\n' \
+      "$previous_version" "$version" "$install_dir"
+  else
+    printf 'Updated Infermion to %s at %s/infermion\n' "$version" "$install_dir"
+  fi
+  printf 'Next: infermion --version\n'
+else
+  printf 'Installed Infermion %s to %s/infermion\n' "$version" "$install_dir"
+  case ":${PATH}:" in
+    *":${install_dir}:"*) printf 'Next: infermion login\n' ;;
+    *)
+      printf 'Run now: "%s/infermion" login\n' "$install_dir"
+      printf 'For this shell: export PATH="%s:$PATH"\n' "$install_dir"
+      printf 'To persist it, add that export to your shell profile.\n'
+      ;;
+  esac
+fi
