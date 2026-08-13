@@ -1,0 +1,69 @@
+{
+  "assets": [
+    {
+      "arch": "arm64",
+      "archive": "infermion-v0.1.0b3-linux-arm64.tar.gz",
+      "os": "linux",
+      "sbom": "infermion-v0.1.0b3-linux-arm64.cdx.json",
+      "sbom_sha256": "1002e4eaef68095f4fd0290d7f6e3ce0a1e3a11c6dd77d3b43ba74917110dd27",
+      "sbom_url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-linux-arm64.cdx.json",
+      "sha256": "90a57824a79cbdee1497d23f8fe82c6dccf7805153f9cc59a6c39c651ed06991",
+      "target": "linux-arm64",
+      "url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-linux-arm64.tar.gz"
+    },
+    {
+      "arch": "x86_64",
+      "archive": "infermion-v0.1.0b3-linux-x86_64.tar.gz",
+      "os": "linux",
+      "sbom": "infermion-v0.1.0b3-linux-x86_64.cdx.json",
+      "sbom_sha256": "ffc51fcbbeba59849dd44fc57dd2bc240b04d1ae591f54865e2fa78cedc91418",
+      "sbom_url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-linux-x86_64.cdx.json",
+      "sha256": "036e8114df7010df1afecdc47e709722a425df532f20bcd88541f5e03927fbff",
+      "target": "linux-x86_64",
+      "url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-linux-x86_64.tar.gz"
+    },
+    {
+      "arch": "arm64",
+      "archive": "infermion-v0.1.0b3-macos-arm64.zip",
+      "os": "macos",
+      "sbom": "infermion-v0.1.0b3-macos-arm64.cdx.json",
+      "sbom_sha256": "5d8ef3b29a6dccd4e6ad425a1e9edd80993ed6732857765b04406778cef25d0b",
+      "sbom_url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-macos-arm64.cdx.json",
+      "sha256": "4bd570609fbc2dd1e3054d28ef743352583ddf08d21931ff603a46739f54b387",
+      "target": "macos-arm64",
+      "url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-macos-arm64.zip"
+    },
+    {
+      "arch": "x86_64",
+      "archive": "infermion-v0.1.0b3-macos-x86_64.zip",
+      "os": "macos",
+      "sbom": "infermion-v0.1.0b3-macos-x86_64.cdx.json",
+      "sbom_sha256": "2c03d277c76795979892634e21d8958c778ffd3e7661d5ecd524b17107e82654",
+      "sbom_url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-macos-x86_64.cdx.json",
+      "sha256": "7ec68448a41976c657b67c3ab2c4d2b1900f603a9c1b2f8c555fadf3cd151b4b",
+      "target": "macos-x86_64",
+      "url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-macos-x86_64.zip"
+    },
+    {
+      "arch": "x86_64",
+      "archive": "infermion-v0.1.0b3-windows-x86_64.zip",
+      "os": "windows",
+      "sbom": "infermion-v0.1.0b3-windows-x86_64.cdx.json",
+      "sbom_sha256": "4d1ac10b09736d2945c91d0d326f99c48e65355629b321a763d4f5bdc4a4569b",
+      "sbom_url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-windows-x86_64.cdx.json",
+      "sha256": "879ca94b757bbf614151ae7fdd07abb9115761a69aa1694da96a8ea0169e0f71",
+      "target": "windows-x86_64",
+      "url": "https://github.com/infermion/infermion-cli-releases/releases/download/cli-v0.1.0b3/infermion-v0.1.0b3-windows-x86_64.zip"
+    }
+  ],
+  "generated_at": "2026-08-13T18:09:04+00:00",
+  "license": "Proprietary",
+  "license_url": "https://infermion.com/legal/client-terms",
+  "product": "infermion",
+  "release_kind": "beta",
+  "release_repository": "infermion/infermion-cli-releases",
+  "schema_version": 1,
+  "sdk_version": "0.1.0",
+  "tag": "cli-v0.1.0b3",
+  "version": "0.1.0b3"
+}

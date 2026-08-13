@@ -1,0 +1,145 @@
+#!/bin/sh
+INFERMION_DEFAULT_TRACK=beta
+# Install an Infermion CLI/TUI stable or beta release for macOS or Linux.
+set -eu
+
+release_repository=${INFERMION_RELEASE_REPOSITORY:-infermion/infermion-cli-releases}
+requested_version=${INFERMION_VERSION:-latest}
+requested_track=${INFERMION_TRACK:-${INFERMION_DEFAULT_TRACK:-stable}}
+install_dir=${INFERMION_INSTALL_DIR:-"${HOME}/.local/bin"}
+release_base=${INFERMION_RELEASE_BASE_URL:-"https://github.com/${release_repository}/releases"}
+channel_base=${INFERMION_CHANNEL_BASE_URL:-"https://raw.githubusercontent.com/${release_repository}/main/channels"}
+
+fail() {
+  printf 'infermion installer: %s\n' "$1" >&2
+  exit 1
+}
+
+download() {
+  source_url=$1
+  destination=$2
+  if command -v curl >/dev/null 2>&1; then
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      "$source_url" --output "$destination"
+  elif command -v wget >/dev/null 2>&1; then
+    wget --https-only --quiet "$source_url" --output-document "$destination"
+  else
+    fail 'curl or wget is required'
+  fi
+}
+
+printf '%s' "$release_repository" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+  || fail 'release repository must be one GitHub owner/repository slug'
+case "$release_base" in https://*) ;; *) fail 'release base URL must use HTTPS' ;; esac
+case "$channel_base" in https://*) ;; *) fail 'channel base URL must use HTTPS' ;; esac
+case "$requested_track" in stable|beta) ;; *) fail 'INFERMION_TRACK must be stable or beta' ;; esac
+case "$install_dir" in *'"'*|*'\'*) fail 'install directory cannot contain quotes or backslashes' ;; esac
+newline_count=$(printf '%s' "$install_dir" | wc -l | tr -d ' ')
+[ "$newline_count" = 0 ] || fail 'install directory cannot contain newlines'
+
+case $(uname -s) in
+  Darwin) target_os=macos; archive_extension=zip ;;
+  Linux) target_os=linux; archive_extension=tar.gz ;;
+  *) fail "unsupported operating system: $(uname -s)" ;;
+esac
+
+case $(uname -m) in
+  x86_64|amd64) target_arch=x86_64 ;;
+  arm64|aarch64) target_arch=arm64 ;;
+  *) fail "unsupported architecture: $(uname -m)" ;;
+esac
+
+temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/infermion-install.XXXXXX")
+trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
+
+if [ "$requested_version" = latest ]; then
+  download "${channel_base}/${requested_track}/VERSION" "$temporary_dir/VERSION"
+  version=$(tr -d '\r\n ' < "$temporary_dir/VERSION")
+else
+  version=${requested_version#v}
+fi
+
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$' \
+  || fail "invalid release version: $version"
+
+tag="cli-v${version}"
+if printf '%s' "$version" | grep -Eq '(a|b|rc)[0-9]+$'; then
+  release_track=beta
+else
+  release_track=stable
+fi
+if [ "$requested_version" = latest ] && [ "$release_track" != "$requested_track" ]; then
+  fail "${requested_track} channel resolved an unexpected ${release_track} version: ${version}"
+fi
+archive="infermion-v${version}-${target_os}-${target_arch}.${archive_extension}"
+asset_base="${release_base}/download/${tag}"
+download "${asset_base}/${archive}" "$temporary_dir/$archive"
+download "${asset_base}/SHA256SUMS" "$temporary_dir/SHA256SUMS"
+
+if command -v "${INFERMION_COSIGN:-cosign}" >/dev/null 2>&1; then
+  cosign_command=${INFERMION_COSIGN:-cosign}
+  download "${asset_base}/SHA256SUMS.sigstore.json" "$temporary_dir/SHA256SUMS.sigstore.json"
+  "$cosign_command" verify-blob \
+    --bundle "$temporary_dir/SHA256SUMS.sigstore.json" \
+    --certificate-identity-regexp '^https://github\.com/infermion/infermion/\.github/workflows/cli-release\.yml@refs/(tags/cli-v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?|heads/main)$' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    "$temporary_dir/SHA256SUMS" >/dev/null \
+    || fail 'Sigstore verification failed for SHA256SUMS'
+elif [ "${INFERMION_REQUIRE_SIGSTORE:-0}" = 1 ]; then
+  fail 'cosign is required because INFERMION_REQUIRE_SIGSTORE=1'
+else
+  printf '%s\n' 'cosign is not installed; continuing with HTTPS and SHA-256 verification.' >&2
+fi
+
+expected=$(awk -v name="$archive" '$2 == name { print $1 }' "$temporary_dir/SHA256SUMS")
+[ -n "$expected" ] || fail "${archive} is absent from SHA256SUMS"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$temporary_dir/$archive" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 "$temporary_dir/$archive" | awk '{print $1}')
+else
+  fail 'sha256sum or shasum is required to verify the download'
+fi
+[ "$actual" = "$expected" ] || fail "checksum verification failed for ${archive}"
+
+if [ "$target_os" = macos ]; then
+  /usr/bin/ditto -x -k "$temporary_dir/$archive" "$temporary_dir"
+else
+  tar -xzf "$temporary_dir/$archive" -C "$temporary_dir"
+fi
+binary="$temporary_dir/infermion-v${version}-${target_os}-${target_arch}/infermion"
+[ -f "$binary" ] || fail 'release archive did not contain the infermion executable'
+if [ "$target_os" = macos ] && [ "$release_track" = stable ]; then
+  /usr/bin/codesign --verify --deep --strict "$binary" \
+    || fail 'the macOS application signature is invalid'
+  /usr/sbin/spctl --assess --type execute "$binary" \
+    || fail 'macOS Gatekeeper rejected the Infermion application'
+elif [ "$target_os" = macos ]; then
+  printf '%s\n' 'Installing an unsigned Infermion beta; macOS may ask you to confirm the first launch.' >&2
+fi
+installed_version=$("$binary" --version 2>/dev/null) \
+  || fail 'the downloaded Infermion application did not start'
+[ "$installed_version" = "$version" ] \
+  || fail "the application reported version ${installed_version}, expected ${version}"
+mkdir -p "$install_dir"
+staged=$(mktemp "$install_dir/.infermion-${version}.XXXXXX")
+cp "$binary" "$staged"
+chmod 0755 "$staged"
+mv -f "$staged" "$install_dir/infermion"
+
+config_dir=${XDG_CONFIG_HOME:-"${HOME}/.config"}/infermion
+mkdir -p "$config_dir"
+printf '%s\n' \
+  'channel = "standalone"' \
+  "release_track = \"${release_track}\"" \
+  "version = \"${version}\"" \
+  "install_dir = \"${install_dir}\"" \
+  "release_repository = \"${release_repository}\"" \
+  > "$config_dir/install.toml"
+chmod 0600 "$config_dir/install.toml"
+
+printf 'Installed Infermion %s to %s/infermion\n' "$version" "$install_dir"
+case ":${PATH}:" in
+  *":${install_dir}:"*) ;;
+  *) printf 'Add %s to PATH, then run: infermion login\n' "$install_dir" ;;
+esac
