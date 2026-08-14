@@ -34,6 +34,9 @@ if ($env:PROCESSOR_ARCHITECTURE -notin @("AMD64", "x86")) {
 }
 
 $temporaryDir = Join-Path ([IO.Path]::GetTempPath()) ("infermion-install-" + [guid]::NewGuid())
+$stagedApplication = $null
+$stagedCurrent = $null
+$stagedLauncher = $null
 New-Item -ItemType Directory -Path $temporaryDir | Out-Null
 try {
     $resolveLatest = $Version -eq "latest"
@@ -81,14 +84,46 @@ try {
         throw "The downloaded application reported version '$reportedVersion', expected '$Version'."
     }
 
+    $dataRoot = Join-Path $env:LOCALAPPDATA "Infermion"
+    $versionsRoot = Join-Path $dataRoot "versions"
+    $versionDirectory = Join-Path $versionsRoot $Version
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    $destination = Join-Path $InstallDir "infermion.exe"
+    New-Item -ItemType Directory -Path $versionsRoot -Force | Out-Null
+    if (Test-Path $versionDirectory) {
+        $existingBinary = Join-Path $versionDirectory "infermion.exe"
+        $existingVersion = (& $existingBinary --version).Trim()
+        if ($LASTEXITCODE -ne 0 -or $existingVersion -ne $Version) {
+            throw "Existing application directory for $Version is invalid."
+        }
+    } else {
+        $stagedApplication = Join-Path $versionsRoot (".infermion-$Version-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $stagedApplication | Out-Null
+        Get-ChildItem -Force (Split-Path $binary) |
+            Copy-Item -Destination $stagedApplication -Recurse -Force
+        Move-Item $stagedApplication $versionDirectory
+        $stagedApplication = $null
+    }
     if ($CurrentProcessId -gt 0) {
         Wait-Process -Id $CurrentProcessId -ErrorAction SilentlyContinue
     }
-    $staged = Join-Path $InstallDir (".infermion-" + [guid]::NewGuid() + ".tmp")
-    Copy-Item $binary $staged -Force
-    Move-Item $staged $destination -Force
+    $legacyExecutable = Join-Path $InstallDir "infermion.exe"
+    Remove-Item $legacyExecutable -Force -ErrorAction SilentlyContinue
+    $currentFile = Join-Path $InstallDir "current.txt"
+    $stagedCurrent = Join-Path $InstallDir (".current-" + [guid]::NewGuid() + ".tmp")
+    Set-Content -LiteralPath $stagedCurrent -Value $versionDirectory -Encoding ascii -NoNewline
+    Move-Item $stagedCurrent $currentFile -Force
+    $stagedCurrent = $null
+    $destination = Join-Path $InstallDir "infermion.cmd"
+    $stagedLauncher = Join-Path $InstallDir (".infermion-" + [guid]::NewGuid() + ".cmd")
+    @'
+@echo off
+setlocal
+set /p "INFERMION_APP=<%~dp0current.txt"
+"%INFERMION_APP%\infermion.exe" %*
+exit /b %ERRORLEVEL%
+    '@ | Set-Content -LiteralPath $stagedLauncher -Encoding ascii
+    Move-Item $stagedLauncher $destination -Force
+    $stagedLauncher = $null
 
     $configDir = Join-Path $env:APPDATA "Infermion"
     New-Item -ItemType Directory -Path $configDir -Force | Out-Null
@@ -97,6 +132,8 @@ try {
         release_track = $releaseTrack
         version = $Version
         install_dir = $InstallDir
+        application_dir = $versionDirectory
+        launcher = $destination
         release_repository = $ReleaseRepository
     } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $configDir "install.json")
 
@@ -117,6 +154,11 @@ try {
         Write-Host "Installed Infermion $Version to $destination"
     }
 } finally {
+    foreach ($stagedPath in @($stagedApplication, $stagedCurrent, $stagedLauncher)) {
+        if ($stagedPath) {
+            Remove-Item -LiteralPath $stagedPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
     Remove-Item -Recurse -Force $temporaryDir -ErrorAction SilentlyContinue
     if ($DeleteInstaller -and $PSCommandPath) {
         Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue

@@ -15,6 +15,9 @@ current_process_id=${INFERMION_CURRENT_PROCESS_ID:-}
 suppress_cosign_warning=${INFERMION_SUPPRESS_COSIGN_WARNING:-0}
 installer_path=$0
 temporary_dir=
+staged_application=
+staged_current=
+staged_launcher=
 
 fail() {
   printf 'infermion installer: %s\n' "$1" >&2
@@ -99,15 +102,34 @@ elif [ "$target_os" = linux ] && [ "$(id -u)" -eq 0 ]; then
 else
   install_dir="${HOME}/.local/bin"
 fi
+if [ "${INFERMION_DATA_DIR+x}" = x ]; then
+  data_dir=$INFERMION_DATA_DIR
+elif [ "$target_os" = linux ] && [ "$(id -u)" -eq 0 ]; then
+  data_dir=/usr/local/lib/infermion
+else
+  data_dir="${XDG_DATA_HOME:-"${HOME}/.local/share"}/infermion"
+fi
 [ -n "$install_dir" ] || fail 'install directory cannot be empty'
-case "$install_dir" in *'"'*|*'\'*) fail 'install directory cannot contain quotes or backslashes' ;; esac
-newline_count=$(printf '%s' "$install_dir" | wc -l | tr -d ' ')
-[ "$newline_count" = 0 ] || fail 'install directory cannot contain newlines'
+for destination_path in "$install_dir" "$data_dir"; do
+  [ -n "$destination_path" ] || fail 'installation paths cannot be empty'
+  case "$destination_path" in *'"'*|*'\'*) fail 'installation paths cannot contain quotes or backslashes' ;; esac
+  newline_count=$(printf '%s' "$destination_path" | wc -l | tr -d ' ')
+  [ "$newline_count" = 0 ] || fail 'installation paths cannot contain newlines'
+done
 case "$current_process_id" in
   ''|*[!0-9]*) [ -z "$current_process_id" ] || fail 'current process ID must be numeric' ;;
 esac
 
 cleanup() {
+  if [ -n "$staged_application" ]; then
+    rm -rf "$staged_application"
+  fi
+  if [ -n "$staged_current" ]; then
+    rm -f "$staged_current"
+  fi
+  if [ -n "$staged_launcher" ]; then
+    rm -f "$staged_launcher"
+  fi
   if [ -n "$temporary_dir" ]; then
     rm -rf "$temporary_dir"
   fi
@@ -186,8 +208,10 @@ if [ "$target_os" = macos ]; then
 else
   tar -xzf "$temporary_dir/$archive" -C "$temporary_dir"
 fi
-binary="$temporary_dir/infermion-v${version}-${target_os}-${target_arch}/infermion"
+application="$temporary_dir/infermion-v${version}-${target_os}-${target_arch}"
+binary="$application/infermion"
 [ -f "$binary" ] || fail 'release archive did not contain the infermion executable'
+[ -d "$application/_internal" ] || fail 'release archive did not contain the Infermion runtime'
 if [ "$target_os" = macos ] && [ "$release_track" = stable ]; then
   /usr/bin/codesign --verify --deep --strict "$binary" \
     || fail 'the macOS application signature is invalid'
@@ -201,17 +225,41 @@ installed_version=$("$binary" --version 2>/dev/null) \
 [ "$installed_version" = "$version" ] \
   || fail "the application reported version ${installed_version}, expected ${version}"
 status "Installing Infermion to ${install_dir}..."
-mkdir -p "$install_dir"
+versions_dir="$data_dir/versions"
+version_dir="$versions_dir/$version"
+mkdir -p "$install_dir" "$versions_dir"
+if [ -d "$version_dir" ]; then
+  existing_version=$("$version_dir/infermion" --version 2>/dev/null || true)
+  [ "$existing_version" = "$version" ] \
+    || fail "existing application directory for ${version} is invalid"
+else
+  staged_application=$(mktemp -d "$versions_dir/.infermion-${version}.XXXXXX")
+  cp -R "$application/." "$staged_application/"
+  chmod 0755 "$staged_application/infermion"
+  mv "$staged_application" "$version_dir"
+  staged_application=
+fi
 if [ -n "$current_process_id" ]; then
   status 'Waiting for the previous Infermion process to exit...'
   while kill -0 "$current_process_id" 2>/dev/null; do
     sleep 1
   done
 fi
-staged=$(mktemp "$install_dir/.infermion-${version}.XXXXXX")
-cp "$binary" "$staged"
-chmod 0755 "$staged"
-mv -f "$staged" "$install_dir/infermion"
+staged_current="$data_dir/.current-${version}.$$"
+ln -s "versions/$version" "$staged_current"
+if mv -fT "$staged_current" "$data_dir/current" 2>/dev/null; then
+  : # GNU mv replaces a destination symlink without following it.
+elif mv -fh "$staged_current" "$data_dir/current" 2>/dev/null; then
+  : # BSD/macOS mv uses -h for the same atomic rename behavior.
+else
+  rm -f "$data_dir/current"
+  mv "$staged_current" "$data_dir/current"
+fi
+staged_current=
+staged_launcher="$install_dir/.infermion-${version}.$$"
+ln -s "$data_dir/current/infermion" "$staged_launcher"
+mv -f "$staged_launcher" "$install_dir/infermion"
+staged_launcher=
 
 config_dir=${XDG_CONFIG_HOME:-"${HOME}/.config"}/infermion
 mkdir -p "$config_dir"
@@ -220,6 +268,8 @@ printf '%s\n' \
   "release_track = \"${release_track}\"" \
   "version = \"${version}\"" \
   "install_dir = \"${install_dir}\"" \
+  "application_dir = \"${version_dir}\"" \
+  "launcher = \"${install_dir}/infermion\"" \
   "release_repository = \"${release_repository}\"" \
   > "$config_dir/install.toml"
 chmod 0600 "$config_dir/install.toml"
